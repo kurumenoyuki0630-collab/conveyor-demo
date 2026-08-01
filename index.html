@@ -49,12 +49,6 @@
   .eyebrow { font-family: 'JetBrains Mono', monospace; font-size: 10px; letter-spacing: .26em;
     color: var(--faint); text-transform: uppercase; }
   #title { font-size: 16px; font-weight: 900; line-height: 1.2; }
-  .badge {
-    font-family: 'JetBrains Mono', monospace; font-size: 11px; font-weight: 700;
-    padding: 3px 10px; border-radius: 6px;
-    border: 1px solid var(--border); background: var(--panel); color: var(--muted);
-  }
-  .badge.warn { color: var(--mid); border-color: rgba(245,166,35,0.4); }
   #switches { margin-left: auto; display: flex; gap: 8px; pointer-events: auto; }
   #switches select {
     background: var(--panel-solid); color: var(--text); border: 1px solid var(--border);
@@ -117,8 +111,6 @@
   <div>
     <div id="title">コンベア装置</div>
   </div>
-  <span class="badge" id="badge-scenario"></span>
-  <span class="badge" id="badge-mode"></span>
 </div>
 
 <div id="bottom">
@@ -513,7 +505,7 @@ function stopPlay() {
 }
 
 /* ================================================================
-   HUD（字幕・スキャン表示・バッジ）
+   HUD（字幕・スキャン表示）
 ================================================================ */
 const elSubtitle = document.getElementById("subtitle");
 const elScan = document.getElementById("scanlabel");
@@ -532,12 +524,6 @@ function updateHUD() {
   /* ボタン活性 */
   document.getElementById("btn-prev").disabled = (frameIndex <= -1);
   document.getElementById("btn-next").disabled = (frameIndex >= fr.length - 1);
-
-  /* バッジ */
-  document.getElementById("badge-scenario").textContent = DATA[scenario].label;
-  const bm = document.getElementById("badge-mode");
-  bm.textContent = (mode === "verify") ? "検証モード" : "解説モード";
-  bm.className = "badge" + (mode === "explain" ? " warn" : "");
 }
 
 /* ================================================================
