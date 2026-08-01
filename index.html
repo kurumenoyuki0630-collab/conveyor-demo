@@ -1,0 +1,635 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="robots" content="noindex, nofollow">
+<title>コンベア装置</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Zen+Kaku+Gothic+New:wght@400;500;700;900&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<style>
+  :root {
+    --bg: #0b0e14;
+    --panel: rgba(17,22,31,0.88);
+    --panel-solid: #11161f;
+    --border: #232c3a;
+    --text: #e6edf6;
+    --muted: #7e8aa0;
+    --faint: #586075;
+    --accent: #2dd4bf;
+    --accent-dim: rgba(45,212,191,0.14);
+    --high: #f04060;
+    --mid: #f5a623;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'Zen Kaku Gothic New', system-ui, sans-serif;
+    overflow: hidden;
+  }
+  .mono { font-family: 'JetBrains Mono', monospace; }
+  #stage { position: fixed; inset: 0; }
+  canvas { display: block; }
+
+  /* ---- top bar ---- */
+  #topbar {
+    position: fixed; top: 0; left: 0; right: 0;
+    display: flex; align-items: center; gap: 14px;
+    padding: 12px 18px;
+    background: linear-gradient(180deg, rgba(11,14,20,0.92), rgba(11,14,20,0));
+    pointer-events: none;
+    z-index: 10;
+  }
+  #topbar .tick { width: 8px; height: 24px; background: var(--accent); border-radius: 2px;
+    box-shadow: 0 0 12px rgba(45,212,191,0.4); }
+  .eyebrow { font-family: 'JetBrains Mono', monospace; font-size: 10px; letter-spacing: .26em;
+    color: var(--faint); text-transform: uppercase; }
+  #title { font-size: 16px; font-weight: 900; line-height: 1.2; }
+  .badge {
+    font-family: 'JetBrains Mono', monospace; font-size: 11px; font-weight: 700;
+    padding: 3px 10px; border-radius: 6px;
+    border: 1px solid var(--border); background: var(--panel); color: var(--muted);
+  }
+  .badge.warn { color: var(--mid); border-color: rgba(245,166,35,0.4); }
+  #switches { margin-left: auto; display: flex; gap: 8px; pointer-events: auto; }
+  #switches select {
+    background: var(--panel-solid); color: var(--text); border: 1px solid var(--border);
+    border-radius: 7px; padding: 5px 8px; font-family: inherit; font-size: 12px;
+  }
+
+  /* ---- bottom: subtitle + controls ---- */
+  #bottom {
+    position: fixed; left: 0; right: 0; bottom: 0;
+    display: flex; flex-direction: column; align-items: center; gap: 10px;
+    padding: 10px 14px 18px;
+    background: linear-gradient(0deg, rgba(11,14,20,0.94), rgba(11,14,20,0));
+    z-index: 10;
+  }
+  #subtitle {
+    min-height: 30px; font-size: 16px; font-weight: 700; text-align: center;
+    max-width: 860px; line-height: 1.5;
+    text-shadow: 0 2px 8px rgba(0,0,0,0.8);
+  }
+  #controls {
+    display: flex; align-items: center; gap: 8px;
+    background: var(--panel); border: 1px solid var(--border); border-radius: 12px;
+    padding: 8px 10px; backdrop-filter: blur(6px);
+  }
+  #controls button {
+    background: var(--panel-solid); color: var(--text);
+    border: 1px solid var(--border); border-radius: 8px;
+    padding: 8px 14px; font-family: inherit; font-size: 13px; font-weight: 700;
+    cursor: pointer; transition: .15s;
+  }
+  #controls button:hover { border-color: var(--accent); color: var(--accent); }
+  #controls button:disabled { opacity: .35; cursor: default; }
+  #controls button:disabled:hover { border-color: var(--border); color: var(--text); }
+  #controls button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  #btn-play { min-width: 86px; }
+  #scanbox { display: flex; align-items: center; gap: 8px; margin-left: 6px; padding-left: 12px;
+    border-left: 1px solid var(--border); }
+  #scanlabel { font-family:'JetBrains Mono',monospace; font-size: 14px; font-weight: 700; color: var(--accent); min-width: 60px; text-align: center; }
+  #segs { display: flex; gap: 4px; }
+  #segs i { width: 14px; height: 5px; border-radius: 2px; background: var(--border); transition: .15s; }
+  #segs i.on { background: var(--accent); box-shadow: 0 0 8px rgba(45,212,191,0.5); }
+  #hint { font-family:'JetBrains Mono',monospace; font-size: 10px; color: var(--faint); }
+  @media (max-width: 640px) {
+    #title { font-size: 13px; }
+    #controls button { padding: 8px 10px; font-size: 12px; }
+    #hint { display: none; }
+  }
+</style>
+</head>
+<body>
+
+<!-- ============================================================
+  判定セッション公開用ビルド（検証モード固定・単一シナリオ）
+============================================================ -->
+
+<div id="stage"></div>
+
+<div id="topbar">
+  <div class="tick"></div>
+  <div>
+    <div id="title">コンベア装置</div>
+  </div>
+  <span class="badge" id="badge-scenario"></span>
+  <span class="badge" id="badge-mode"></span>
+</div>
+
+<div id="bottom">
+  <div id="subtitle"></div>
+  <div id="controls">
+    <button id="btn-prev">◀ 前</button>
+    <button id="btn-play">▶ 再生</button>
+    <button id="btn-next">次 ▶</button>
+    <button id="btn-reset">リセット</button>
+    <div id="scanbox">
+      <span id="scanlabel">READY</span>
+      <span id="segs"><i></i><i></i><i></i><i></i><i></i><i></i></span>
+    </div>
+  </div>
+  <div id="hint">← → キーでスキャン送り ／ Space で再生</div>
+</div>
+
+<script>
+"use strict";
+
+/* ================================================================
+   CONFIG ── 調整パラメータ（ここだけ編集すれば動きを変えられます）
+   ※コード本文に数値を直書きしない。追加の外出しは必要になった時点で。
+================================================================ */
+const CONFIG = {
+  workSize:     0.6,   // ワークの大きさ（ユニット）
+  stepDistance: 1.2,   // スキャン送り1回あたりのワーク前進距離（ユニット）※7スキャンでセンサ位置(8.4ユニット)にちょうど到達
+  playSpeed:    0.48,  // ワークの移動速度（ユニット/秒）※目標位置へ滑らかに動く速さ。scanInterval一杯まで動き続けるよう低めに設定（stepDistance/scanIntervalに比例）
+  scanInterval: 2800,  // 通常再生で次のスキャンへ自動で進む間隔（ミリ秒）
+  labelScale:   0.45,  // デバイスラベルの表示倍率（1.0が旧サイズ。小さくすると文字が縮小し機器と被りにくくなる）
+};
+
+/* ================================================================
+   DATA ── スキャン遷移表（遷移データ のミラー）
+================================================================ */
+const INIT_STATES = { X000:0, X001:1, X002:0, M0:0, Y000:0, Y001:0 }; // 初期状態（非常停止NC＝押していないのでX001は1）
+
+const DATA = {
+  missA: {
+    label: "コンベア",
+    frames: [
+      { scan:"S1", event:"スタートボタンを押した",
+        states:{ X000:1, X001:1, X002:0, M0:1, Y000:1, Y001:1 } },
+      { scan:"S2", event:"スタートボタンから手を離した",
+        states:{ X000:0, X001:1, X002:0, M0:1, Y000:1, Y001:1 } },
+      { scan:"S3", event:null,
+        states:{ X000:0, X001:1, X002:0, M0:1, Y000:1, Y001:1 } },
+      { scan:"S4", event:"非常停止ボタンを押した",
+        states:{ X000:0, X001:0, X002:0, M0:1, Y000:0, Y001:1 } },
+      { scan:"S5", event:"非常停止ボタンを押したまま",
+        states:{ X000:0, X001:0, X002:0, M0:1, Y000:0, Y001:1 } },
+      { scan:"S6", event:"非常停止ボタンから手を離した",
+        states:{ X000:0, X001:1, X002:0, M0:1, Y000:1, Y001:1 } },
+    ],
+  },
+};
+
+/* ================================================================
+   判定セッション用ビルド：シナリオ／モードを固定（切替UIなし）
+================================================================ */
+let scenario = "missA";
+let mode     = "verify";
+
+/* ================================================================
+   Three.js シーン構築（美術方針＝「動くセル図v3」・標準ジオメトリのみ）
+================================================================ */
+const COLORS = {
+  bg: 0x0b0e14, floor: 0x0d1119, grid: 0x1a2230,
+  frame: 0x2a3546, leg: 0x232c3a, beltDark: "#141a24", beltStripe: "#2b3648",
+  work: 0xf5a623,
+  console: 0x1a2230, consoleTop: 0x212b3c,
+  pbGreen: 0x22c55e, pbGreenOn: 0x6ff2a0, pbBase: 0x0f141d,
+  estopRed: 0xd92b4b, estopYellow: 0xf5c623, estopStem: 0x9aa5b5,
+  lampOn: 0x57e389, lampOff: 0x1c2a22, lampBezel: 0x14181f,
+  sensorPost: 0x3d8bff, beamOk: 0x2dd4bf, beamHit: 0xf04060,
+  motor: 0x33415a, motorOn: 0x3d8bff, pulley: 0x8fa0b8,
+};
+
+const stage = document.getElementById("stage");
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+stage.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(COLORS.bg);
+scene.fog = new THREE.Fog(COLORS.bg, 26, 46);
+
+const camera = new THREE.PerspectiveCamera(42, window.innerWidth/window.innerHeight, 0.1, 100);
+camera.position.set(7.5, 7.5, 10.5);
+camera.lookAt(0, 0.8, 0);
+
+scene.add(new THREE.AmbientLight(0xdde8ff, 0.55));
+const dir = new THREE.DirectionalLight(0xffffff, 0.75);
+dir.position.set(6, 12, 8);
+scene.add(dir);
+const fill = new THREE.DirectionalLight(0x88aaff, 0.25);
+fill.position.set(-8, 6, -6);
+scene.add(fill);
+
+/* 床＋グリッド（制御盤の方眼） */
+const floor = new THREE.Mesh(
+  new THREE.PlaneGeometry(60, 60),
+  new THREE.MeshLambertMaterial({ color: COLORS.floor })
+);
+floor.rotation.x = -Math.PI/2;
+scene.add(floor);
+const grid = new THREE.GridHelper(60, 60, COLORS.grid, COLORS.grid);
+grid.position.y = 0.01;
+scene.add(grid);
+
+/* ---- コンベア（長さ10：x -5〜+5、ベルト上面 y=1.0） ---- */
+const conveyor = new THREE.Group();
+scene.add(conveyor);
+
+const body = new THREE.Mesh(
+  new THREE.BoxGeometry(10, 0.45, 1.4),
+  new THREE.MeshLambertMaterial({ color: COLORS.frame })
+);
+body.position.set(0, 0.78, 0);
+conveyor.add(body);
+
+for (const lx of [-4.4, -1.5, 1.5, 4.4]) {
+  for (const lz of [-0.55, 0.55]) {
+    const leg = new THREE.Mesh(
+      new THREE.BoxGeometry(0.16, 0.56, 0.16),
+      new THREE.MeshLambertMaterial({ color: COLORS.leg })
+    );
+    leg.position.set(lx, 0.28, lz);
+    conveyor.add(leg);
+  }
+}
+
+/* ベルト面：縞テクスチャをスクロールさせて「動いている」を一目で */
+function makeBeltTexture() {
+  const c = document.createElement("canvas");
+  c.width = 128; c.height = 64;
+  const g = c.getContext("2d");
+  g.fillStyle = COLORS.beltDark; g.fillRect(0, 0, 128, 64);
+  g.fillStyle = COLORS.beltStripe;
+  g.fillRect(0, 0, 22, 64);
+  const tex = new THREE.CanvasTexture(c);
+  tex.wrapS = THREE.RepeatWrapping;
+  tex.wrapT = THREE.ClampToEdgeWrapping;
+  tex.repeat.set(10, 1);
+  return tex;
+}
+const beltTex = makeBeltTexture();
+const belt = new THREE.Mesh(
+  new THREE.PlaneGeometry(10, 1.2),
+  new THREE.MeshLambertMaterial({ map: beltTex })
+);
+belt.rotation.x = -Math.PI/2;
+belt.position.set(0, 1.005, 0);
+conveyor.add(belt);
+
+/* ---- ワーク ---- */
+const WORK_START_X = -4.2;
+const work = new THREE.Mesh(
+  new THREE.BoxGeometry(CONFIG.workSize, CONFIG.workSize, CONFIG.workSize),
+  new THREE.MeshLambertMaterial({ color: COLORS.work })
+);
+work.position.set(WORK_START_X, 1.0 + CONFIG.workSize/2, 0);
+scene.add(work);
+
+/* ---- 操作盤（左手前）＋スタートPB＋非常停止PB ---- */
+const consoleGrp = new THREE.Group();
+consoleGrp.position.set(-3.8, 0, 2.4);
+scene.add(consoleGrp);
+
+const pedestal = new THREE.Mesh(
+  new THREE.BoxGeometry(3.2, 1.1, 1.0),
+  new THREE.MeshLambertMaterial({ color: COLORS.console })
+);
+pedestal.position.y = 0.55;
+consoleGrp.add(pedestal);
+const consoleTop = new THREE.Mesh(
+  new THREE.BoxGeometry(3.3, 0.1, 1.1),
+  new THREE.MeshLambertMaterial({ color: COLORS.consoleTop })
+);
+consoleTop.position.y = 1.13;
+consoleGrp.add(consoleTop);
+
+/* スタートPB（緑円柱・押すと沈む＋発光） */
+/* 操作盤幅：ボタン間隔1.1（旧0.8）＝パイロットランプ埋め込み分を含め直上ラベルが重ならないよう再拡幅 */
+const startBase = new THREE.Mesh(
+  new THREE.CylinderGeometry(0.3, 0.3, 0.06, 24),
+  new THREE.MeshLambertMaterial({ color: COLORS.pbBase })
+);
+startBase.position.set(-1.1, 1.21, 0);
+consoleGrp.add(startBase);
+const startBtn = new THREE.Mesh(
+  new THREE.CylinderGeometry(0.22, 0.22, 0.16, 24),
+  new THREE.MeshLambertMaterial({ color: COLORS.pbGreen, emissive: COLORS.pbGreen, emissiveIntensity: 0.15 })
+);
+const START_Y = 1.31;
+startBtn.position.set(-1.1, START_Y, 0);
+consoleGrp.add(startBtn);
+
+/* 非常停止PB（黄ベース＋赤キノコ・「押されているか」で描画。信号値X001はNC反転に注意） */
+const estopPlate = new THREE.Mesh(
+  new THREE.BoxGeometry(0.62, 0.06, 0.62),
+  new THREE.MeshLambertMaterial({ color: COLORS.estopYellow })
+);
+estopPlate.position.set(1.1, 1.21, 0);
+consoleGrp.add(estopPlate);
+const estopStem = new THREE.Mesh(
+  new THREE.CylinderGeometry(0.12, 0.12, 0.14, 20),
+  new THREE.MeshLambertMaterial({ color: COLORS.estopStem })
+);
+estopStem.position.set(1.1, 1.30, 0);
+consoleGrp.add(estopStem);
+const estopCap = new THREE.Mesh(
+  new THREE.CylinderGeometry(0.26, 0.30, 0.15, 24),
+  new THREE.MeshLambertMaterial({ color: COLORS.estopRed, emissive: COLORS.estopRed, emissiveIntensity: 0.1 })
+);
+const ESTOP_Y = 1.44;
+estopCap.position.set(1.1, ESTOP_Y, 0);
+consoleGrp.add(estopCap);
+
+/* ---- 運転中ランプ（パイロットランプ＝スタートPBと非常停止PBの間に、同じ操作盤面に設置。黒ベゼル＋緑レンズ。グローで最大級に誇張＝本デモのシグネチャ） ---- */
+const lampBezel = new THREE.Mesh(
+  new THREE.CylinderGeometry(0.22, 0.24, 0.12, 20),
+  new THREE.MeshLambertMaterial({ color: COLORS.lampBezel })
+);
+lampBezel.position.set(0, 1.19, 0);
+consoleGrp.add(lampBezel);
+const lamp = new THREE.Mesh(
+  new THREE.SphereGeometry(0.15, 22, 16),
+  new THREE.MeshLambertMaterial({ color: COLORS.lampOff, emissive: 0x000000 })
+);
+lamp.position.set(0, 1.32, 0);
+consoleGrp.add(lamp);
+
+function makeGlowSprite(colorStr) {
+  const c = document.createElement("canvas");
+  c.width = 256; c.height = 256;
+  const g = c.getContext("2d");
+  const grad = g.createRadialGradient(128, 128, 8, 128, 128, 128);
+  grad.addColorStop(0, colorStr);
+  grad.addColorStop(0.35, colorStr.replace("1)", "0.5)"));
+  grad.addColorStop(1, "rgba(0,0,0,0)");
+  g.fillStyle = grad;
+  g.fillRect(0, 0, 256, 256);
+  const sp = new THREE.Sprite(new THREE.SpriteMaterial({
+    map: new THREE.CanvasTexture(c),
+    blending: THREE.AdditiveBlending, transparent: true, depthWrite: false,
+  }));
+  return sp;
+}
+const lampGlow = makeGlowSprite("rgba(110,240,160,1)");
+lampGlow.scale.set(1.8, 1.8, 1);
+lampGlow.position.copy(lamp.position);
+lampGlow.visible = false;
+consoleGrp.add(lampGlow);
+
+/* ---- 光電センサ（右端・光線ビーム） ---- */
+const sensorGrp = new THREE.Group();
+sensorGrp.position.set(4.2, 0, 0);
+scene.add(sensorGrp);
+for (const z of [-0.95, 0.95]) {
+  const post = new THREE.Mesh(
+    new THREE.BoxGeometry(0.12, 0.85, 0.12),
+    new THREE.MeshLambertMaterial({ color: COLORS.sensorPost })
+  );
+  post.position.set(0, 1.42, z);
+  sensorGrp.add(post);
+}
+const beam = new THREE.Mesh(
+  new THREE.BoxGeometry(0.035, 0.035, 1.9),
+  new THREE.MeshLambertMaterial({ color: COLORS.beamOk, emissive: COLORS.beamOk, emissiveIntensity: 0.8 })
+);
+beam.position.set(0, 1.35, 0);
+sensorGrp.add(beam);
+
+/* ---- モータ（右端・回転プーリー） ---- */
+const motorBody = new THREE.Mesh(
+  new THREE.BoxGeometry(0.95, 0.75, 0.75),
+  new THREE.MeshLambertMaterial({ color: COLORS.motor })
+);
+motorBody.position.set(5.75, 0.78, 0);
+scene.add(motorBody);
+const pulleyGrp = new THREE.Group();
+pulleyGrp.position.set(5.75, 0.78, 0.55);
+scene.add(pulleyGrp);
+const pulley = new THREE.Mesh(
+  new THREE.CylinderGeometry(0.33, 0.33, 0.12, 24),
+  new THREE.MeshLambertMaterial({ color: COLORS.pulley })
+);
+pulley.rotation.x = Math.PI/2;
+pulleyGrp.add(pulley);
+for (const a of [0, Math.PI/2]) {
+  const spoke = new THREE.Mesh(
+    new THREE.BoxGeometry(0.56, 0.07, 0.14),
+    new THREE.MeshLambertMaterial({ color: 0x333f52 })
+  );
+  spoke.rotation.z = a;
+  spoke.position.z = 0.01;
+  pulleyGrp.add(spoke);
+}
+
+/* ---- デバイスラベル（機器の直上に直接表示＝作図慣習） ---- */
+function makeLabel(idText, nameText) {
+  const c = document.createElement("canvas");
+  const g = c.getContext("2d");
+  const idFont = "700 46px 'JetBrains Mono', monospace";
+  const nameFont = "700 40px 'Zen Kaku Gothic New', sans-serif";
+  g.font = idFont;   const wId = g.measureText(idText).width;
+  g.font = nameFont; const wName = g.measureText(nameText).width;
+  const w = Math.ceil(wId + wName + 78), h = 76;
+  c.width = w; c.height = h;
+  g.fillStyle = "rgba(13,17,23,0.86)";
+  g.strokeStyle = "rgba(45,212,191,0.35)";
+  g.lineWidth = 2;
+  const r = 14;
+  g.beginPath();
+  g.moveTo(r,1); g.lineTo(w-r,1); g.quadraticCurveTo(w-1,1,w-1,r);
+  g.lineTo(w-1,h-r); g.quadraticCurveTo(w-1,h-1,w-r,h-1);
+  g.lineTo(r,h-1); g.quadraticCurveTo(1,h-1,1,h-r);
+  g.lineTo(1,r); g.quadraticCurveTo(1,1,r,1);
+  g.closePath(); g.fill(); g.stroke();
+  g.textBaseline = "middle";
+  g.font = idFont; g.fillStyle = "#2dd4bf";
+  g.fillText(idText, 24, h/2 + 2);
+  g.font = nameFont; g.fillStyle = "#e6edf6";
+  g.fillText(nameText, 24 + wId + 18, h/2 + 2);
+  const sp = new THREE.Sprite(new THREE.SpriteMaterial({
+    map: new THREE.CanvasTexture(c), transparent: true, depthWrite: false,
+  }));
+  sp.scale.set(w/95 * CONFIG.labelScale, h/95 * CONFIG.labelScale, 1);
+  return sp;
+}
+function addLabel(idText, nameText, x, y, z) {
+  const sp = makeLabel(idText, nameText);
+  sp.position.set(x, y, z);
+  scene.add(sp);
+}
+addLabel("X000", "スタートPB",   -4.9, 1.95, 2.4);
+addLabel("X001", "非常停止PB",   -2.7, 1.95, 2.4);
+addLabel("Y001", "運転中ランプ", -3.8,  2.55, 2.4);
+addLabel("X002", "光電センサ",    4.2,  2.55, 0);
+addLabel("Y000", "モータ",        5.75, 1.85, 0.3);
+
+/* ================================================================
+   再生エンジン（スキャン離散時間 → 3D連続時間への変換）
+================================================================ */
+let frameIndex = -1;          // -1 = 初期状態（READY）
+let states = { ...INIT_STATES };
+let playing = false;
+let playTimer = 0;
+let workPos = 0;              // 現在位置（連続値）
+
+function framesNow() { return DATA[scenario].frames; }
+
+/* ワーク目標位置＝「Y000がONだったスキャンの数 × stepDistance」（決定的・巻き戻し自由） */
+function targetPos(idx) {
+  let n = 0;
+  const fr = framesNow();
+  for (let i = 0; i <= idx && i < fr.length; i++) {
+    if (fr[i].states.Y000 === 1) n++;
+  }
+  return n * CONFIG.stepDistance;
+}
+
+function applyFrame(idx, snap) {
+  frameIndex = idx;
+  states = (idx < 0) ? { ...INIT_STATES } : { ...framesNow()[idx].states };
+  if (snap) workPos = targetPos(idx);
+  updateHUD();
+}
+
+function stepNext() {
+  if (frameIndex < framesNow().length - 1) applyFrame(frameIndex + 1, false);
+  else stopPlay();
+}
+function stepPrev() {
+  if (frameIndex > -1) applyFrame(frameIndex - 1, false);
+}
+function resetAll() {
+  stopPlay();
+  applyFrame(-1, true);
+}
+function startPlay() {
+  if (frameIndex >= framesNow().length - 1) applyFrame(-1, true);
+  playing = true;
+  playTimer = 0;
+  document.getElementById("btn-play").textContent = "❚❚ 一時停止";
+}
+function stopPlay() {
+  playing = false;
+  document.getElementById("btn-play").textContent = "▶ 再生";
+}
+
+/* ================================================================
+   HUD（字幕・スキャン表示・バッジ）
+================================================================ */
+const elSubtitle = document.getElementById("subtitle");
+const elScan = document.getElementById("scanlabel");
+const segs = document.querySelectorAll("#segs i");
+
+function updateHUD() {
+  const fr = framesNow();
+
+  /* 字幕：操作ナレーションのみ */
+  elSubtitle.textContent = (frameIndex < 0) ? "" : (fr[frameIndex].event || "");
+
+  /* スキャン表示 */
+  elScan.textContent = (frameIndex < 0) ? "READY" : fr[frameIndex].scan;
+  segs.forEach((s, i) => s.classList.toggle("on", i <= frameIndex));
+
+  /* ボタン活性 */
+  document.getElementById("btn-prev").disabled = (frameIndex <= -1);
+  document.getElementById("btn-next").disabled = (frameIndex >= fr.length - 1);
+
+  /* バッジ */
+  document.getElementById("badge-scenario").textContent = DATA[scenario].label;
+  const bm = document.getElementById("badge-mode");
+  bm.textContent = (mode === "verify") ? "検証モード" : "解説モード";
+  bm.className = "badge" + (mode === "explain" ? " warn" : "");
+}
+
+/* ================================================================
+   アニメーションループ（状態→3D表現。誇張ルールは S0仕様書§2.3）
+================================================================ */
+const clock = new THREE.Clock();
+
+function animate() {
+  requestAnimationFrame(animate);
+  const dt = Math.min(clock.getDelta(), 0.1);
+  const t = clock.elapsedTime;
+
+  /* 自動再生：scanInterval ごとに次スキャンへ */
+  if (playing) {
+    playTimer += dt * 1000;
+    if (playTimer >= CONFIG.scanInterval) {
+      playTimer = 0;
+      if (frameIndex < framesNow().length - 1) stepNext();
+      else stopPlay();
+    }
+  }
+
+  /* ワーク：目標位置へ playSpeed で滑らかに移動 */
+  const target = targetPos(frameIndex);
+  const workPosBefore = workPos;
+  if (workPos < target) workPos = Math.min(target, workPos + CONFIG.playSpeed * dt);
+  else if (workPos > target) workPos = Math.max(target, workPos - CONFIG.playSpeed * dt);
+  const moveDelta = workPos - workPosBefore;
+  work.position.x = WORK_START_X + workPos;
+  work.scale.setScalar(1); /* サイズはジオメトリ側（CONFIG.workSize）で決定 */
+
+  /* ベルト縞スクロール＋プーリー回転：ワークの実移動量に同期（Y000=1でも目標到達済みなら停止） */
+  /* ベルトは repeat.set(10,1)・コンベア長10ユニットなので「移動量1ユニット＝オフセット1.0」が正しい対応 */
+  const running = states.Y000 === 1;
+  if (moveDelta !== 0) {
+    beltTex.offset.x -= moveDelta * 1.0;
+    pulleyGrp.rotation.z -= moveDelta / 0.33; /* プーリー半径0.33から弧長で回転量を算出 */
+  }
+  motorBody.material.color.setHex(running ? COLORS.motorOn : COLORS.motor);
+
+  /* スタートPB：X000=1 で沈む＋発光 */
+  const startPressed = states.X000 === 1;
+  startBtn.position.y = START_Y - (startPressed ? 0.07 : 0);
+  startBtn.material.emissiveIntensity = startPressed ? 0.9 : 0.15;
+
+  /* 非常停止PB：押されている＝X001が0（NC反転）。沈む＋点滅 */
+  const estopPressed = states.X001 === 0;
+  estopCap.position.y = ESTOP_Y - (estopPressed ? 0.07 : 0);
+  estopCap.material.emissiveIntensity = estopPressed ? (0.5 + 0.45 * Math.sin(t * 9)) : 0.1;
+
+  /* 運転中ランプ：グローで誇張 */
+  const lampOn = states.Y001 === 1;
+  lamp.material.color.setHex(lampOn ? COLORS.lampOn : COLORS.lampOff);
+  lamp.material.emissive.setHex(lampOn ? COLORS.lampOn : 0x000000);
+  lamp.material.emissiveIntensity = lampOn ? (0.9 + 0.15 * Math.sin(t * 3)) : 0;
+  lampGlow.visible = lampOn;
+  if (lampOn) {
+    const s = 1.8 + 0.18 * Math.sin(t * 3);
+    lampGlow.scale.set(s, s, 1);
+  }
+
+  /* 光電センサ：X002=1 で光線が変色 */
+  const hit = states.X002 === 1;
+  beam.material.color.setHex(hit ? COLORS.beamHit : COLORS.beamOk);
+  beam.material.emissive.setHex(hit ? COLORS.beamHit : COLORS.beamOk);
+
+  renderer.render(scene, camera);
+}
+
+/* ================================================================
+   UIイベント
+================================================================ */
+document.getElementById("btn-next").addEventListener("click", () => { stopPlay(); stepNext(); });
+document.getElementById("btn-prev").addEventListener("click", () => { stopPlay(); stepPrev(); });
+document.getElementById("btn-reset").addEventListener("click", resetAll);
+document.getElementById("btn-play").addEventListener("click", () => { playing ? stopPlay() : startPlay(); });
+
+document.addEventListener("keydown", (e) => {
+  if (e.key === "ArrowRight") { stopPlay(); stepNext(); }
+  else if (e.key === "ArrowLeft") { stopPlay(); stepPrev(); }
+  else if (e.key === " ") { e.preventDefault(); playing ? stopPlay() : startPlay(); }
+});
+
+window.addEventListener("resize", () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+/* 起動 */
+resetAll();
+animate();
+</script>
+</body>
+</html>
