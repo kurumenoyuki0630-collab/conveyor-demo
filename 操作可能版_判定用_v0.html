@@ -1,0 +1,487 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="robots" content="noindex, nofollow">
+<title>コンベア装置</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Zen+Kaku+Gothic+New:wght@400;500;700;900&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<style>
+  :root {
+    --bg: #0b0e14;
+    --panel: rgba(17,22,31,0.88);
+    --panel-solid: #11161f;
+    --border: #232c3a;
+    --text: #e6edf6;
+    --muted: #7e8aa0;
+    --faint: #586075;
+    --accent: #2dd4bf;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: var(--bg); color: var(--text);
+    font-family: 'Zen Kaku Gothic New', system-ui, sans-serif;
+    overflow: hidden;
+    -webkit-user-select: none; user-select: none;
+  }
+  #stage { position: fixed; inset: 0; }
+  canvas { display: block; touch-action: manipulation; }
+
+  #topbar {
+    position: fixed; top: 0; left: 0; right: 0;
+    display: flex; align-items: center; gap: 12px; padding: 14px 18px;
+    background: linear-gradient(180deg, rgba(11,14,20,0.9), rgba(11,14,20,0));
+    pointer-events: none; z-index: 10;
+  }
+  #topbar .tick { width: 7px; height: 22px; background: var(--accent); border-radius: 2px;
+    box-shadow: 0 0 12px rgba(45,212,191,0.4); flex: none; }
+  #title { font-size: 15px; font-weight: 900; }
+
+  #bottom {
+    position: fixed; left: 0; right: 0; bottom: 0;
+    display: flex; flex-direction: column; align-items: center; gap: 12px;
+    padding: 14px 16px 20px;
+    background: linear-gradient(0deg, rgba(11,14,20,0.92), rgba(11,14,20,0));
+    z-index: 10;
+  }
+  #guide {
+    font-size: 13.5px; color: var(--muted); text-align: center; line-height: 1.65;
+    max-width: 620px; text-shadow: 0 2px 8px rgba(0,0,0,0.8);
+  }
+  #guide b { color: var(--text); font-weight: 700; }
+  #btn-reset {
+    background: var(--panel-solid); color: var(--text);
+    border: 1px solid var(--border); border-radius: 10px;
+    padding: 10px 22px; font-family: inherit; font-size: 13px; font-weight: 700;
+    cursor: pointer; transition: .15s;
+  }
+  #btn-reset:hover { border-color: var(--accent); color: var(--accent); }
+
+  @media (max-width: 640px) {
+    #title { font-size: 13px; }
+    #guide { font-size: 12.5px; }
+  }
+</style>
+</head>
+<body>
+
+<!-- ================================================================
+  コンベア装置
+  ・操作盤のボタンを押すと、制御プログラムがその結果を計算して装置が動く。
+  ・URLパラメータ： ?prog=a|b （既定は a）
+================================================================ -->
+
+<div id="stage"></div>
+
+<div id="topbar">
+  <div class="tick"></div>
+  <div id="title">コンベア装置</div>
+</div>
+
+<div id="bottom">
+  <div id="guide">
+    操作盤のボタンを<b>クリック（タップ）</b>してください。<br>
+    赤い<b>非常停止ボタン</b>は、押し込まれた状態になります。<b>もう一度クリックすると解除</b>されます。<br>
+    部品が右端まで進んだあとは、<b>「最初から」</b>で何度でもやり直せます。
+  </div>
+  <button id="btn-reset">最初から</button>
+</div>
+
+<script>
+"use strict";
+
+/* ================================================================
+   CONFIG ── 調整パラメータ
+================================================================ */
+const CONFIG = {
+  scanPeriodMs: 20,    // 擬似PLCの1スキャン周期（ミリ秒）
+  workSpeed:    1.15,  // Y000=1のときのワーク前進速度（ユニット/秒）
+  workSize:     0.6,   // ワークの大きさ（ユニット）
+  sensorAt:     8.4,   // ワーク中心が光電センサと一致する位置（ユニット）
+  workMax:      9.6,   // コンベア終端
+  labelScale:   0.50,  // デバイスラベルの表示倍率（ラベル同士が重ならない上限）
+  pressDepth:   0.13,  // ボタンの沈み込み量
+};
+
+/* ================================================================
+   ラダー定義 ── 擬似PLCが実行する回路
+   接点 { d:"X001" } = a接点、{ d:"X002", nc:true } = b接点
+   ※X001は現場側がNC配線（押していない＝1）。ラダー上はa接点で描くのが正。
+================================================================ */
+const LADDERS = {
+  a: {
+    rungs: [
+      { out:"M0",   groups:[ {or:[[{d:"X000"}],[{d:"M0"}]]}, {or:[[{d:"X002",nc:true}]]} ] },
+      { out:"Y000", groups:[ {or:[[{d:"M0"}]]}, {or:[[{d:"X001"}]]} ] },
+      { out:"Y001", groups:[ {or:[[{d:"M0"}]]} ] },
+    ],
+  },
+  b: {
+    rungs: [
+      { out:"M0",   groups:[ {or:[[{d:"X000"}],[{d:"M0"}]]}, {or:[[{d:"X001"}]]}, {or:[[{d:"X002",nc:true}]]} ] },
+      { out:"Y000", groups:[ {or:[[{d:"M0"}]]} ] },
+      { out:"Y001", groups:[ {or:[[{d:"M0"}]]} ] },
+    ],
+  },
+};
+
+const params = new URLSearchParams(location.search);
+const ladderId = LADDERS.hasOwnProperty(params.get("prog")) ? params.get("prog") : "a";
+
+/* ================================================================
+   擬似PLC
+================================================================ */
+let st      = { X000:0, X001:1, X002:0, M0:0, Y000:0, Y001:0 };
+let uiStart = false;   // スタートPBを押しているか
+let uiEstop = false;   // 非常停止PBが押し込まれているか（ロック式）
+let workPos = 0;
+
+function contactVal(c, s) { return c.nc ? (s[c.d] ? 0 : 1) : (s[c.d] ? 1 : 0); }
+
+function scanOnce() {
+  /* ① 入力読込（X002は前スキャンの機械状態＝実機と同じ1スキャン遅れ） */
+  st.X000 = uiStart ? 1 : 0;
+  st.X001 = uiEstop ? 0 : 1;                                                   // NC配線：押下で0
+  st.X002 = (Math.abs(workPos - CONFIG.sensorAt) <= CONFIG.workSize / 2) ? 1 : 0;
+
+  /* ② 演算 */
+  for (const rung of LADDERS[ladderId].rungs) {
+    let v = 1;
+    for (const g of rung.groups) {
+      let gv = 0;
+      for (const ser of g.or) {
+        let sv = 1;
+        for (const c of ser) sv = sv && contactVal(c, st);
+        gv = gv || sv;
+      }
+      v = v && gv;
+    }
+    st[rung.out] = v ? 1 : 0;
+  }
+
+  /* ③ 出力 → 機械 */
+  if (st.Y000 === 1 && workPos < CONFIG.workMax) {
+    workPos = Math.min(CONFIG.workMax, workPos + CONFIG.workSpeed * CONFIG.scanPeriodMs / 1000);
+  }
+}
+
+/* ================================================================
+   Three.js シーン（美術方針＝「動くセル図v3」・標準ジオメトリのみ）
+================================================================ */
+const COLORS = {
+  bg: 0x0b0e14, floor: 0x0d1119, grid: 0x1a2230,
+  frame: 0x2a3546, leg: 0x232c3a, beltDark: "#141a24", beltStripe: "#2b3648",
+  work: 0xf5a623,
+  console: 0x1a2230, consoleTop: 0x212b3c,
+  pbGreen: 0x22c55e, pbBase: 0x0f141d, pbRing: 0x6ff2a0,
+  estopRed: 0xd92b4b, estopYellow: 0xf5c623, estopStem: 0x9aa5b5,
+  lampOn: 0x57e389, lampOff: 0x24382c, lampBezel: 0x1b222c, lampPost: 0x2a3546,
+  sensorPost: 0x3d8bff, beamOk: 0x2dd4bf, beamHit: 0xf04060,
+  motor: 0x33415a, motorOn: 0x3d8bff, pulley: 0x8fa0b8,
+};
+
+const stage = document.getElementById("stage");
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+stage.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(COLORS.bg);
+scene.fog = new THREE.Fog(COLORS.bg, 26, 46);
+
+const camera = new THREE.PerspectiveCamera(42, 1, 0.1, 100);
+camera.position.set(7.5, 7.5, 10.5);
+camera.lookAt(0, 1.1, 0);
+
+scene.add(new THREE.AmbientLight(0xdde8ff, 0.55));
+const dir = new THREE.DirectionalLight(0xffffff, 0.75); dir.position.set(6, 12, 8); scene.add(dir);
+const fill = new THREE.DirectionalLight(0x88aaff, 0.25); fill.position.set(-8, 6, -6); scene.add(fill);
+
+const floor = new THREE.Mesh(new THREE.PlaneGeometry(60, 60), new THREE.MeshLambertMaterial({ color: COLORS.floor }));
+floor.rotation.x = -Math.PI/2; scene.add(floor);
+const grid = new THREE.GridHelper(60, 60, COLORS.grid, COLORS.grid); grid.position.y = 0.01; scene.add(grid);
+
+/* ---- コンベア ---- */
+const conveyor = new THREE.Group(); scene.add(conveyor);
+const body = new THREE.Mesh(new THREE.BoxGeometry(10, 0.45, 1.4), new THREE.MeshLambertMaterial({ color: COLORS.frame }));
+body.position.set(0, 0.78, 0); conveyor.add(body);
+for (const lx of [-4.4, -1.5, 1.5, 4.4]) for (const lz of [-0.55, 0.55]) {
+  const leg = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.56, 0.16), new THREE.MeshLambertMaterial({ color: COLORS.leg }));
+  leg.position.set(lx, 0.28, lz); conveyor.add(leg);
+}
+function makeBeltTexture() {
+  const c = document.createElement("canvas"); c.width = 128; c.height = 64;
+  const g = c.getContext("2d");
+  g.fillStyle = COLORS.beltDark; g.fillRect(0, 0, 128, 64);
+  g.fillStyle = COLORS.beltStripe; g.fillRect(0, 0, 22, 64);
+  const tex = new THREE.CanvasTexture(c);
+  tex.wrapS = THREE.RepeatWrapping; tex.wrapT = THREE.ClampToEdgeWrapping; tex.repeat.set(10, 1);
+  return tex;
+}
+const beltTex = makeBeltTexture();
+const belt = new THREE.Mesh(new THREE.PlaneGeometry(10, 1.2), new THREE.MeshLambertMaterial({ map: beltTex }));
+belt.rotation.x = -Math.PI/2; belt.position.set(0, 1.005, 0); conveyor.add(belt);
+
+/* ---- ワーク ---- */
+const WORK_START_X = -4.2;
+const work = new THREE.Mesh(
+  new THREE.BoxGeometry(CONFIG.workSize, CONFIG.workSize, CONFIG.workSize),
+  new THREE.MeshLambertMaterial({ color: COLORS.work })
+);
+work.position.set(WORK_START_X, 1.0 + CONFIG.workSize/2, 0); scene.add(work);
+
+/* ---- 操作盤（スタートPBと非常停止PBの2つだけ。運転中ランプは機械側へ移した） ---- */
+const consoleGrp = new THREE.Group(); consoleGrp.position.set(-3.8, 0, 2.4); scene.add(consoleGrp);
+const pedestal = new THREE.Mesh(new THREE.BoxGeometry(2.4, 1.1, 1.0), new THREE.MeshLambertMaterial({ color: COLORS.console }));
+pedestal.position.y = 0.55; consoleGrp.add(pedestal);
+const consoleTop = new THREE.Mesh(new THREE.BoxGeometry(2.5, 0.1, 1.1), new THREE.MeshLambertMaterial({ color: COLORS.consoleTop }));
+consoleTop.position.y = 1.13; consoleGrp.add(consoleTop);
+
+const PB_X = 0.65;   // 操作盤中心からの左右のボタン間隔（2つだけになったので詰めた）
+
+/* スタートPB（緑・押すと沈む＋発光。押下リングで押した瞬間を強調） */
+const startBase = new THREE.Mesh(new THREE.CylinderGeometry(0.3, 0.3, 0.06, 24), new THREE.MeshLambertMaterial({ color: COLORS.pbBase }));
+startBase.position.set(-PB_X, 1.21, 0); consoleGrp.add(startBase);
+const startBtn = new THREE.Mesh(
+  new THREE.CylinderGeometry(0.22, 0.22, 0.16, 24),
+  new THREE.MeshLambertMaterial({ color: COLORS.pbGreen, emissive: COLORS.pbGreen, emissiveIntensity: 0.15 })
+);
+const START_Y = 1.31; startBtn.position.set(-PB_X, START_Y, 0); consoleGrp.add(startBtn);
+/* 押下リング：押している間だけ現れる同心円（沈み込みだけでは分かりにくいため） */
+const startRing = new THREE.Mesh(
+  new THREE.RingGeometry(0.32, 0.40, 28),
+  new THREE.MeshBasicMaterial({ color: COLORS.pbRing, transparent: true, opacity: 0.9, side: THREE.DoubleSide })
+);
+startRing.rotation.x = -Math.PI/2; startRing.position.set(-PB_X, 1.25, 0); startRing.visible = false;
+consoleGrp.add(startRing);
+
+/* 非常停止PB（黄ベース＋赤キノコ・ロック式） */
+const estopPlate = new THREE.Mesh(new THREE.BoxGeometry(0.62, 0.06, 0.62), new THREE.MeshLambertMaterial({ color: COLORS.estopYellow }));
+estopPlate.position.set(PB_X, 1.21, 0); consoleGrp.add(estopPlate);
+const estopStem = new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.12, 0.14, 20), new THREE.MeshLambertMaterial({ color: COLORS.estopStem }));
+estopStem.position.set(PB_X, 1.30, 0); consoleGrp.add(estopStem);
+const estopCap = new THREE.Mesh(
+  new THREE.CylinderGeometry(0.26, 0.30, 0.15, 24),
+  new THREE.MeshLambertMaterial({ color: COLORS.estopRed, emissive: COLORS.estopRed, emissiveIntensity: 0.1 })
+);
+const ESTOP_Y = 1.44; estopCap.position.set(PB_X, ESTOP_Y, 0); consoleGrp.add(estopCap);
+
+/* ---- 運転中ランプ（コンベア脇の独立した表示灯） ----
+   機械の状態を知らせる灯なので、機械（コンベア）の脇に自立させる。
+   消灯時も暗色＋ベゼルで「そこにランプがある」ことが分かるようにする。 */
+const lampGrp = new THREE.Group(); lampGrp.position.set(-1.2, 0, -1.4); scene.add(lampGrp);
+const lampFoot = new THREE.Mesh(
+  new THREE.CylinderGeometry(0.34, 0.38, 0.09, 20),
+  new THREE.MeshLambertMaterial({ color: COLORS.lampPost })
+);
+lampFoot.position.y = 0.045; lampGrp.add(lampFoot);
+const lampPost = new THREE.Mesh(
+  new THREE.CylinderGeometry(0.065, 0.065, 2.30, 14),
+  new THREE.MeshLambertMaterial({ color: COLORS.lampPost })
+);
+lampPost.position.y = 1.24; lampGrp.add(lampPost);
+const lampBezel = new THREE.Mesh(
+  new THREE.CylinderGeometry(0.27, 0.31, 0.15, 22),
+  new THREE.MeshLambertMaterial({ color: COLORS.lampBezel })
+);
+lampBezel.position.y = 2.45; lampGrp.add(lampBezel);
+const lamp = new THREE.Mesh(
+  new THREE.SphereGeometry(0.27, 24, 18),
+  new THREE.MeshLambertMaterial({ color: COLORS.lampOff, emissive: 0x000000 })
+);
+lamp.position.y = 2.68; lampGrp.add(lamp);
+
+function makeGlowSprite(colorStr) {
+  const c = document.createElement("canvas"); c.width = 256; c.height = 256;
+  const g = c.getContext("2d");
+  const grad = g.createRadialGradient(128, 128, 8, 128, 128, 128);
+  grad.addColorStop(0, colorStr);
+  grad.addColorStop(0.35, colorStr.replace("1)", "0.5)"));
+  grad.addColorStop(1, "rgba(0,0,0,0)");
+  g.fillStyle = grad; g.fillRect(0, 0, 256, 256);
+  return new THREE.Sprite(new THREE.SpriteMaterial({
+    map: new THREE.CanvasTexture(c), blending: THREE.AdditiveBlending, transparent: true, depthWrite: false,
+  }));
+}
+const lampGlow = makeGlowSprite("rgba(110,240,160,1)");
+lampGlow.scale.set(2.6, 2.6, 1); lampGlow.position.copy(lamp.position); lampGlow.visible = false;
+lampGrp.add(lampGlow);
+
+/* ---- 光電センサ ---- */
+const sensorGrp = new THREE.Group(); sensorGrp.position.set(4.2, 0, 0); scene.add(sensorGrp);
+for (const z of [-0.95, 0.95]) {
+  const post = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.85, 0.12), new THREE.MeshLambertMaterial({ color: COLORS.sensorPost }));
+  post.position.set(0, 1.42, z); sensorGrp.add(post);
+}
+const beam = new THREE.Mesh(
+  new THREE.BoxGeometry(0.035, 0.035, 1.9),
+  new THREE.MeshLambertMaterial({ color: COLORS.beamOk, emissive: COLORS.beamOk, emissiveIntensity: 0.8 })
+);
+beam.position.set(0, 1.35, 0); sensorGrp.add(beam);
+
+/* ---- モータ ---- */
+const motorBody = new THREE.Mesh(new THREE.BoxGeometry(0.95, 0.75, 0.75), new THREE.MeshLambertMaterial({ color: COLORS.motor }));
+motorBody.position.set(5.75, 0.78, 0); scene.add(motorBody);
+const pulleyGrp = new THREE.Group(); pulleyGrp.position.set(5.75, 0.78, 0.55); scene.add(pulleyGrp);
+const pulley = new THREE.Mesh(new THREE.CylinderGeometry(0.33, 0.33, 0.12, 24), new THREE.MeshLambertMaterial({ color: COLORS.pulley }));
+pulley.rotation.x = Math.PI/2; pulleyGrp.add(pulley);
+for (const a of [0, Math.PI/2]) {
+  const spoke = new THREE.Mesh(new THREE.BoxGeometry(0.56, 0.07, 0.14), new THREE.MeshLambertMaterial({ color: 0x333f52 }));
+  spoke.rotation.z = a; spoke.position.z = 0.01; pulleyGrp.add(spoke);
+}
+
+/* ---- デバイスラベル（機器の直上に直接表示） ---- */
+function makeLabel(idText, nameText) {
+  const c = document.createElement("canvas"); const g = c.getContext("2d");
+  const idFont = "700 46px 'JetBrains Mono', monospace";
+  const nameFont = "700 40px 'Zen Kaku Gothic New', sans-serif";
+  g.font = idFont;   const wId = g.measureText(idText).width;
+  g.font = nameFont; const wName = g.measureText(nameText).width;
+  const w = Math.ceil(wId + wName + 78), h = 76;
+  c.width = w; c.height = h;
+  g.fillStyle = "rgba(13,17,23,0.86)"; g.strokeStyle = "rgba(45,212,191,0.35)"; g.lineWidth = 2;
+  const r = 14;
+  g.beginPath();
+  g.moveTo(r,1); g.lineTo(w-r,1); g.quadraticCurveTo(w-1,1,w-1,r);
+  g.lineTo(w-1,h-r); g.quadraticCurveTo(w-1,h-1,w-r,h-1);
+  g.lineTo(r,h-1); g.quadraticCurveTo(1,h-1,1,h-r);
+  g.lineTo(1,r); g.quadraticCurveTo(1,1,r,1);
+  g.closePath(); g.fill(); g.stroke();
+  g.textBaseline = "middle";
+  g.font = idFont; g.fillStyle = "#2dd4bf"; g.fillText(idText, 24, h/2 + 2);
+  g.font = nameFont; g.fillStyle = "#e6edf6"; g.fillText(nameText, 24 + wId + 18, h/2 + 2);
+  const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: new THREE.CanvasTexture(c), transparent: true, depthWrite: false }));
+  sp.scale.set(w/95 * CONFIG.labelScale, h/95 * CONFIG.labelScale, 1);
+  return sp;
+}
+function addLabel(idText, nameText, x, y, z) { const sp = makeLabel(idText, nameText); sp.position.set(x, y, z); scene.add(sp); }
+/* 操作盤の2つは各ボタンの直上に置き、高さをずらして重なりを避ける（ラベル幅が約2.3ユニットあるため） */
+addLabel("X000", "スタートPB",   -3.8 - PB_X, 1.78, 2.4);
+addLabel("X001", "非常停止PB",   -3.8 + PB_X, 2.42, 2.4);
+addLabel("Y001", "運転中ランプ", -1.2, 3.28, -1.4);
+addLabel("X002", "光電センサ",    4.2, 2.55, 0);
+addLabel("Y000", "モータ",        5.75, 1.85, 0.3);
+
+/* ---- 操作用の当たり判定（見えない大きめのヒットボックス。スマホでも押せるように） ---- */
+function makeHitBox(x, y, z, r, h) {
+  const m = new THREE.Mesh(
+    new THREE.CylinderGeometry(r, r, h, 12),
+    new THREE.MeshBasicMaterial({ visible: false })
+  );
+  m.position.set(x, y, z);
+  consoleGrp.add(m);
+  return m;
+}
+const startHit = makeHitBox(-PB_X, 1.38, 0, 0.44, 0.7);
+const estopHit = makeHitBox( PB_X, 1.50, 0, 0.48, 0.8);
+
+/* ================================================================
+   操作
+================================================================ */
+function setStart(v) { uiStart = v; }
+function toggleEstop() { uiEstop = !uiEstop; }
+
+function resetAll() {
+  st = { X000:0, X001:1, X002:0, M0:0, Y000:0, Y001:0 };
+  uiStart = false; uiEstop = false; workPos = 0; prevShownPos = 0;
+}
+document.getElementById("btn-reset").addEventListener("click", resetAll);
+
+const raycaster = new THREE.Raycaster();
+const pointer = new THREE.Vector2();
+function pickAt(ev) {
+  const r = renderer.domElement.getBoundingClientRect();
+  pointer.x = ((ev.clientX - r.left) / r.width) * 2 - 1;
+  pointer.y = -((ev.clientY - r.top) / r.height) * 2 + 1;
+  raycaster.setFromCamera(pointer, camera);
+  return raycaster.intersectObjects([startHit, estopHit], false);
+}
+renderer.domElement.addEventListener("pointerdown", ev => {
+  const hits = pickAt(ev);
+  if (!hits.length) return;
+  if (hits[0].object === startHit) setStart(true);
+  else toggleEstop();
+});
+/* スタートPBは押している間だけON（指を離せば戻る＝本物の押しボタンと同じ） */
+window.addEventListener("pointerup",     () => setStart(false));
+window.addEventListener("pointercancel", () => setStart(false));
+renderer.domElement.addEventListener("pointermove", ev => {
+  renderer.domElement.style.cursor = pickAt(ev).length ? "pointer" : "default";
+});
+
+/* ================================================================
+   メインループ
+================================================================ */
+const clock = new THREE.Clock();
+let scanAcc = 0;
+let prevShownPos = 0;
+
+function resize() {
+  const w = window.innerWidth, h = window.innerHeight;
+  camera.aspect = w / h; camera.updateProjectionMatrix();
+  renderer.setSize(w, h);
+}
+window.addEventListener("resize", resize);
+
+function animate() {
+  requestAnimationFrame(animate);
+  const dt = Math.min(clock.getDelta(), 0.1);
+  const t = clock.elapsedTime;
+
+  /* 擬似PLCのスキャン */
+  scanAcc += dt * 1000;
+  let guard = 0;
+  while (scanAcc >= CONFIG.scanPeriodMs && guard++ < 20) { scanOnce(); scanAcc -= CONFIG.scanPeriodMs; }
+  if (guard >= 20) scanAcc = 0;   // タブ復帰時などの積み上がりを捨てる
+
+  /* ワーク＋ベルト＋プーリー */
+  work.position.x = WORK_START_X + workPos;
+  const delta = workPos - prevShownPos;
+  prevShownPos = workPos;
+  if (Math.abs(delta) < 0.5) {
+    beltTex.offset.x -= delta * 1.0;
+    pulleyGrp.rotation.z -= delta / 0.33;
+  }
+  motorBody.material.color.setHex(st.Y000 === 1 ? COLORS.motorOn : COLORS.motor);
+
+  /* スタートPB：沈み込み＋発光＋押下リング */
+  const startPressed = st.X000 === 1;
+  startBtn.position.y = START_Y - (startPressed ? CONFIG.pressDepth : 0);
+  startBtn.material.emissiveIntensity = startPressed ? 1.0 : 0.15;
+  startRing.visible = startPressed;
+  if (startPressed) {
+    const s = 1 + 0.10 * Math.sin(t * 12);
+    startRing.scale.set(s, s, 1);
+  }
+
+  /* 非常停止PB：押されている＝X001が0（NC反転）。沈む＋点滅 */
+  const estopPressed = st.X001 === 0;
+  estopCap.position.y = ESTOP_Y - (estopPressed ? CONFIG.pressDepth : 0);
+  estopCap.material.emissiveIntensity = estopPressed ? (0.5 + 0.45 * Math.sin(t * 9)) : 0.1;
+
+  /* 運転中ランプ */
+  const lampOn = st.Y001 === 1;
+  lamp.material.color.setHex(lampOn ? COLORS.lampOn : COLORS.lampOff);
+  lamp.material.emissive.setHex(lampOn ? COLORS.lampOn : 0x000000);
+  lamp.material.emissiveIntensity = lampOn ? (0.95 + 0.15 * Math.sin(t * 3)) : 0;
+  lampGlow.visible = lampOn;
+  if (lampOn) { const s = 2.4 + 0.22 * Math.sin(t * 3); lampGlow.scale.set(s, s, 1); }
+
+  /* 光電センサ */
+  const hit = st.X002 === 1;
+  beam.material.color.setHex(hit ? COLORS.beamHit : COLORS.beamOk);
+  beam.material.emissive.setHex(hit ? COLORS.beamHit : COLORS.beamOk);
+
+  renderer.render(scene, camera);
+}
+
+resize();
+resetAll();
+animate();
+</script>
+</body>
+</html>
